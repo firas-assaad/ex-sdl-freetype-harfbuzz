@@ -1,13 +1,17 @@
-This is a simplish sample application to get from zero to rendering unicode
-text using harfbuzz to do the text layout, freetype for the underlying font
-magic, some trivial code for the anti-aliased font rasterization, and the SDL 
-to create the window to display stuff in.
+A simple application to render unicode text using harfbuzz, freetype and SDL, 
+with a Visual Studio 2015 solution and pre-built libraries.
 
-Based on and forked from https://github.com/anoek/ex-sdl-cairo-freetype-harfbuzz/
+Based on and forked from the following repositories:
+* https://github.com/anoek/ex-sdl-cairo-freetype-harfbuzz
+* https://github.com/lxnt/ex-sdl-freetype-harfbuzz
+* https://github.com/UnickSoft/ex-sdl-freetype-harfbuzz-fribidi.git
 
-Many thanks.
+My example doesn't use FriBidi or Cairo, and utilizes FT_Render_Glyph for rendering
+instead of using spanners and FT_Outline_Render. It was mainly motivated by the desire
+to add complex script support to the [XD Framework](https://github.com/firas-assaad/xd) without
+introducing any big dependencies.
 
 Screenshot
 ==========
 
-![Screenshot](https://github.com/lxnt/ex-sdl-freetype-harfbuzz/raw/master/screenshot.png)
+![Screenshot](screenshot.png)

@@ -1,128 +1,60 @@
-#include <stdlib.h>
+﻿#include <stdlib.h>
 #include <stdio.h>
 #include <assert.h>
 
-#include <SDL.h>
+#include <SDL2/SDL.h>
+#include <SDL2/SDL_render.h>
+#undef main
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include FT_GLYPH_H
 #include FT_OUTLINE_H
 
-#include <hb.h>
-#include <hb-ft.h>
+#include <harfbuzz/hb.h>
+#include <harfbuzz/hb-ft.h>
+#include <string>
 
-#define NUM_EXAMPLES 3
+#include "unicode_data.hpp"
+
+	
+#define NUM_EXAMPLES 4
 
 /* tranlations courtesy of google */
 const char *texts[NUM_EXAMPLES] = {
-    "Ленивый рыжий кот",
-    "كسول الزنجبيل القط",
-    "懶惰的姜貓",
+	u8"City of saints and madmen",
+	u8"من كل بلاد الدنيا من كل بقاع الأرض",
+	u8"佛罗多巴金斯",
+	u8"お手伝いしましょうか？"
 };
 
-const int text_directions[NUM_EXAMPLES] = {
-    HB_DIRECTION_LTR,
-    HB_DIRECTION_RTL,
-    HB_DIRECTION_TTB,
-};
-
-/* XXX: These are not correct, though it doesn't seem to break anything
- *      regardless of their value. */
-const char *languages[NUM_EXAMPLES] = {
-    "en",
-    "ar",
-    "ch",
-};
-
-const hb_script_t scripts[NUM_EXAMPLES] = {
-    HB_SCRIPT_LATIN,
-    HB_SCRIPT_ARABIC,
-    HB_SCRIPT_HAN,
+const char* filenames[NUM_EXAMPLES]{
+	"fonts/DejaVuSerif.ttf",
+	"fonts/amiri-regular.ttf",
+	"fonts/fireflysung.ttf",
+	"fonts/fireflysung.ttf"
 };
 
 enum {
-    ENGLISH=0, ARABIC, CHINESE
+    ENGLISH=0, ARABIC, CHINESE, JAPANESE
 };
-
-typedef struct _spanner_baton_t {
-    /* rendering part - assumes 32bpp surface */
-    uint32_t *pixels; // set to the glyph's origin.
-    uint32_t *first_pixel, *last_pixel; // bounds check
-    uint32_t pitch;
-    uint32_t rshift;
-    uint32_t gshift;
-    uint32_t bshift;
-    uint32_t ashift;
-
-    /* sizing part */
-    int min_span_x;
-    int max_span_x;
-    int min_y;
-    int max_y;
-} spanner_baton_t;
 
 /* google this */
 #ifndef unlikely
 #define unlikely
 #endif
 
-/* This spanner is write only, suitable for write-only mapped buffers,
-   but can cause dark streaks where glyphs overlap, like in arabic scripts.
-
-   Note how spanners don't clip against surface width - resize the window
-   and see what it leads to. */
-void spanner_wo(int y, int count, const FT_Span* spans, void *user) {
-    spanner_baton_t *baton = (spanner_baton_t *) user;
-    uint32_t *scanline = baton->pixels - y * ( (int) baton->pitch / 4 );
-    if (unlikely scanline < baton->first_pixel)
-        return;
-    for (int i = 0; i < count; i++) {
-        uint32_t color =
-            ((spans[i].coverage/2) << baton->rshift) |
-            ((spans[i].coverage/2) << baton->gshift) |
-            ((spans[i].coverage/2) << baton->bshift);
-
-        uint32_t *start = scanline + spans[i].x;
-        if (unlikely start + spans[i].len > baton->last_pixel)
-            return;
-
-        for (int x = 0; x < spans[i].len; x++)
-            *start++ = color;
-    }
-}
-
-/* This spanner does read/modify/write, trading performance for accuracy.
-   The color here is simply half coverage value in all channels,
-   effectively mid-gray.
-   Suitable for when artifacts mostly do come up and annoy.
-   This might be optimized if one does rmw only for some values of x.
-   But since the whole buffer has to be rw anyway, and the previous value
-   is probably still in the cache, there's little point to. */
-void spanner_rw(int y, int count, const FT_Span* spans, void *user) {
-    spanner_baton_t *baton = (spanner_baton_t *) user;
-    uint32_t *scanline = baton->pixels - y * ( (int) baton->pitch / 4 );
-    if (unlikely scanline < baton->first_pixel)
-        return;
-
-    for (int i = 0; i < count; i++) {
-        uint32_t color =
-            ((spans[i].coverage/2)  << baton->rshift) |
-            ((spans[i].coverage/2) << baton->gshift) |
-            ((spans[i].coverage/2) << baton->bshift);
-        uint32_t *start = scanline + spans[i].x;
-        if (unlikely start + spans[i].len > baton->last_pixel)
-            return;
-
-        for (int x = 0; x < spans[i].len; x++)
-            *start++ |= color;
-    }
-}
 
 /*  This spanner is for obtaining exact bounding box for the string.
     Unfortunately this can't be done without rendering it (or pretending to).
     After this runs, we get min and max values of coordinates used.
 */
+typedef struct _spanner_baton_t {
+	int min_span_x;
+	int max_span_x;
+	int min_y;
+	int max_y;
+} spanner_baton_t;
 void spanner_sizer(int y, int count, const FT_Span* spans, void *user) {
     spanner_baton_t *baton = (spanner_baton_t *) user;
 
@@ -138,8 +70,6 @@ void spanner_sizer(int y, int count, const FT_Span* spans, void *user) {
     }
 }
 
-FT_SpanFunc spanner = spanner_wo;
-
 void ftfdump(FT_Face ftf) {
     for(int i=0; i<ftf->num_charmaps; i++) {
         printf("%d: %s %s %c%c%c%c plat=%hu id=%hu\n", i,
@@ -153,24 +83,6 @@ void ftfdump(FT_Face ftf) {
             ftf->charmaps[i]->encoding_id
         );
     }
-}
-
-/*  See http://www.microsoft.com/typography/otspec/name.htm
-    for a list of some possible platform-encoding pairs.
-    We're interested in 0-3 aka 3-1 - UCS-2.
-    Otherwise, fail. If a font has some unicode map, but lacks
-    UCS-2 - it is a broken or irrelevant font. What exactly
-    Freetype will select on face load (it promises most wide
-    unicode, and if that will be slower that UCS-2 - left as
-    an excercise to check. */
-int force_ucs2_charmap(FT_Face ftf) {
-    for(int i = 0; i < ftf->num_charmaps; i++)
-        if ((  (ftf->charmaps[i]->platform_id == 0)
-            && (ftf->charmaps[i]->encoding_id == 3))
-           || ((ftf->charmaps[i]->platform_id == 3)
-            && (ftf->charmaps[i]->encoding_id == 1)))
-                return FT_Set_Charmap(ftf, ftf->charmaps[i]);
-    return -1;
 }
 
 void hline(SDL_Surface *s, int min_x, int max_x, int y, uint32_t color) {
@@ -202,75 +114,84 @@ int main () {
 
     /* Load our fonts */
     FT_Face ft_face[NUM_EXAMPLES];
-    assert(!FT_New_Face(ft_library, "fonts/DejaVuSerif.ttf", 0, &ft_face[ENGLISH]));
+    assert(!FT_New_Face(ft_library, filenames[ENGLISH], 0, &ft_face[ENGLISH]));
     assert(!FT_Set_Char_Size(ft_face[ENGLISH], 0, ptSize, device_hdpi, device_vdpi ));
-    ftfdump(ft_face[ENGLISH]); // wonderful world of encodings ...
-    force_ucs2_charmap(ft_face[ENGLISH]); // which we ignore.
+    ftfdump(ft_face[ENGLISH]);
 
-    assert(!FT_New_Face(ft_library, "fonts/amiri-0.104/amiri-regular.ttf", 0, &ft_face[ARABIC]));
+    assert(!FT_New_Face(ft_library, filenames[ARABIC], 0, &ft_face[ARABIC]));
     assert(!FT_Set_Char_Size(ft_face[ARABIC], 0, ptSize, device_hdpi, device_vdpi ));
     ftfdump(ft_face[ARABIC]);
-    force_ucs2_charmap(ft_face[ARABIC]);
 
-    assert(!FT_New_Face(ft_library, "fonts/fireflysung-1.3.0/fireflysung.ttf", 0, &ft_face[CHINESE]));
+    assert(!FT_New_Face(ft_library, filenames[CHINESE], 0, &ft_face[CHINESE]));
     assert(!FT_Set_Char_Size(ft_face[CHINESE], 0, ptSize, device_hdpi, device_vdpi ));
     ftfdump(ft_face[CHINESE]);
-    force_ucs2_charmap(ft_face[CHINESE]);
+
+	assert(!FT_New_Face(ft_library, filenames[JAPANESE], 0, &ft_face[JAPANESE]));
+	assert(!FT_Set_Char_Size(ft_face[JAPANESE], 0, ptSize, device_hdpi, device_vdpi));
+	ftfdump(ft_face[JAPANESE]);
 
     /* Get our harfbuzz font structs */
     hb_font_t *hb_ft_font[NUM_EXAMPLES];
-    hb_ft_font[ENGLISH] = hb_ft_font_create(ft_face[ENGLISH], NULL);
-    hb_ft_font[ARABIC]  = hb_ft_font_create(ft_face[ARABIC] , NULL);
-    hb_ft_font[CHINESE] = hb_ft_font_create(ft_face[CHINESE], NULL);
+    hb_ft_font[ENGLISH] = hb_ft_font_create(ft_face[ENGLISH], 0);
+    hb_ft_font[ARABIC]  = hb_ft_font_create(ft_face[ARABIC] , 0);
+    hb_ft_font[CHINESE] = hb_ft_font_create(ft_face[CHINESE], 0);
+	hb_ft_font[JAPANESE] = hb_ft_font_create(ft_face[CHINESE], 0);
 
     /** Setup our SDL window **/
     int width      = 800;
     int height     = 600;
-    int videoFlags = SDL_SWSURFACE | SDL_RESIZABLE | SDL_DOUBLEBUF;
     int bpp        = 32;
 
-    /* Initialize our SDL window */
-    if(SDL_Init(SDL_INIT_VIDEO) < 0)   {
-        fprintf(stderr, "Failed to initialize SDL");
-        return -1;
-    }
+	/* Initialize our SDL window */
+	if (SDL_Init(SDL_INIT_VIDEO) < 0)
+	{
+		fprintf(stderr, "Failed to initialize SDL");
+		return -1;
+	}
 
-    SDL_WM_SetCaption("\"Simple\" SDL+FreeType+HarfBuzz Example", "\"Simple\" SDL+FreeType+HarfBuzz Example");
+	SDL_Window *screen = SDL_CreateWindow("SDL2 + FreeType + HarfBuzz + FriBiDi Example",
+		SDL_WINDOWPOS_UNDEFINED,
+		SDL_WINDOWPOS_UNDEFINED,
+		width, height,
+		SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL);
 
-    SDL_Surface *screen;
-    screen = SDL_SetVideoMode(width, height, bpp, videoFlags);
+	SDL_Renderer *renderer = SDL_CreateRenderer(screen, -1, 0);
 
-    /* Enable key repeat, just makes it so we don't have to worry about fancy
-     * scanboard keyboard input and such */
-    SDL_EnableKeyRepeat(300, 130);
-    SDL_EnableUNICODE(1);
+	SDL_SetWindowTitle(screen, "\"Simple\" SDL+FreeType+HarfBuzz Example");
 
     /* Create an SDL image surface we can draw to */
-    SDL_Surface *sdl_surface = SDL_CreateRGBSurface (0, width, height, 32, 0,0,0,0);
+    SDL_Surface *sdl_surface = SDL_CreateRGBSurface (0, width, height, bpp, 0,0,0,0);
+	SDL_Texture* screen_tex = SDL_CreateTexture(renderer,
+		SDL_PIXELFORMAT_ARGB8888,
+		SDL_TEXTUREACCESS_STREAMING,
+		width, height);
+
 
     /* Create a buffer for harfbuzz to use */
     hb_buffer_t *buf = hb_buffer_create();
+	hb_buffer_set_content_type(buf, HB_BUFFER_CONTENT_TYPE_UNICODE);
 
     /* Our main event/draw loop */
     int done = 0;
     int resized = 1;
     while (!done) {
         /* Clear our surface */
-        SDL_FillRect( sdl_surface, NULL, 0 );
+		SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+		SDL_RenderClear(renderer);
+
         SDL_LockSurface(sdl_surface);
 
-        for (int i=0; i < NUM_EXAMPLES; ++i) {
-            hb_buffer_set_direction(buf, text_directions[i]); /* or LTR */
-            hb_buffer_set_script(buf, scripts[i]); /* see hb-unicode.h */
-            hb_buffer_set_language(buf, hb_language_from_string(languages[i], strlen(languages[i])));
-
+		for (int i = 0; i < NUM_EXAMPLES; ++i) {
             /* Layout the text */
             hb_buffer_add_utf8(buf, texts[i], strlen(texts[i]), 0, strlen(texts[i]));
+			unsigned int glyph_count = hb_buffer_get_length(buf);
+			hb_glyph_info_t* glyph_info = hb_buffer_get_glyph_infos(buf, &glyph_count);
+			hb_buffer_set_script(buf, ucdn_get_script(glyph_info[0].codepoint));
+			if (i == CHINESE)
+				hb_buffer_set_direction(buf, HB_DIRECTION_TTB);
+			hb_buffer_guess_segment_properties(buf);
             hb_shape(hb_ft_font[i], buf, NULL, 0);
-
-            unsigned int         glyph_count;
-            hb_glyph_info_t     *glyph_info   = hb_buffer_get_glyph_infos(buf, &glyph_count);
-            hb_glyph_position_t *glyph_pos    = hb_buffer_get_glyph_positions(buf, &glyph_count);
+            hb_glyph_position_t* glyph_pos    = hb_buffer_get_glyph_positions(buf, &glyph_count);
 
             /* set up rendering via spanners */
             spanner_baton_t stuffbaton;
@@ -288,18 +209,18 @@ int main () {
 
             /* See http://www.freetype.org/freetype2/docs/glyphs/glyphs-3.html */
 
-            int max_x = INT_MIN; // largest coordinate a pixel has been set at, or the pen was advanced to.
-            int min_x = INT_MAX; // smallest coordinate a pixel has been set at, or the pen was advanced to.
-            int max_y = INT_MIN; // this is max topside bearing along the string.
-            int min_y = INT_MAX; // this is max value of (height - topbearing) along the string.
+			float max_x = INT_MIN; // largest coordinate a pixel has been set at, or the pen was advanced to.
+			float min_x = INT_MAX; // smallest coordinate a pixel has been set at, or the pen was advanced to.
+			float max_y = INT_MIN; // this is max topside bearing along the string.
+            float min_y = INT_MAX; // this is max value of (height - topbearing) along the string.
             /*  Naturally, the above comments swap their meaning between horizontal and vertical scripts,
                 since the pen changes the axis it is advanced along.
                 However, their differences still make up the bounding box for the string.
                 Also note that all this is in FT coordinate system where y axis points upwards.
              */
 
-            int sizer_x = 0;
-            int sizer_y = 0; /* in FT coordinate system. */
+            float sizer_x = 0;
+			float sizer_y = 0; /* in FT coordinate system. */
 
             FT_Error fterr;
             for (unsigned j = 0; j < glyph_count; ++j) {
@@ -309,8 +230,8 @@ int main () {
                     if (ft_face[i]->glyph->format != FT_GLYPH_FORMAT_OUTLINE) {
                         printf("glyph->format = %4s\n", (char *)&ft_face[i]->glyph->format);
                     } else {
-                        int gx = sizer_x + (glyph_pos[j].x_offset/64);
-                        int gy = sizer_y + (glyph_pos[j].y_offset/64); // note how the sign differs from the rendering pass
+                        float gx = sizer_x + (glyph_pos[j].x_offset/64.);
+						float gy = sizer_y + (glyph_pos[j].y_offset/64.); // note how the sign differs from the rendering pass
 
                         stuffbaton.min_span_x = INT_MAX;
                         stuffbaton.max_span_x = INT_MIN;
@@ -343,8 +264,8 @@ int main () {
                     }
                 }
 
-                sizer_x += glyph_pos[j].x_advance/64;
-                sizer_y += glyph_pos[j].y_advance/64; // note how the sign differs from the rendering pass
+                sizer_x += glyph_pos[j].x_advance/64.;
+                sizer_y += glyph_pos[j].y_advance/64.; // note how the sign differs from the rendering pass
             }
             /* Still have to take into account last glyph's advance. Or not? */
             if (min_x > sizer_x) min_x = sizer_x;
@@ -393,10 +314,12 @@ int main () {
             /* The pen/baseline start coordinates in window coordinate system
                 - with those text placement in the window is controlled.
                 - note that for RTL scripts pen still goes LTR */
-            int x = 0, y = 50 + i * 75;
+			float x = 0;
+			float y = 50 + i * 75;
             if (i == ENGLISH) { x = 20; }                  /* left justify */
             if (i == ARABIC)  { x = width - bbox_w - 20; } /* right justify */
-            if (i == CHINESE) { x = width/2 - bbox_w/2; }  /* center, and for TTB script h_advance is half-width. */
+			if (i == CHINESE) { x = width / 2 - bbox_w / 2; y -= 20; }  /* center, and for TTB script h_advance is half-width. */
+			if (i == JAPANESE) { x = 20; y = 550; }                  /* left justify */
 
             /* Draw baseline and the bounding box */
             /* The below is complicated since we simultaneously
@@ -443,38 +366,50 @@ int main () {
             vline(sdl_surface, top - 1, bottom + 1, left - 1, 0x00ff0000);
             vline(sdl_surface, top - 1, bottom + 1, right + 1, 0x00ff0000);
 
-            /* set rendering spanner */
-            ftr_params.gray_spans = spanner;
-
-            /* initialize rendering part of the baton */
-            stuffbaton.pixels = NULL;
-            stuffbaton.first_pixel = sdl_surface->pixels;
-            stuffbaton.last_pixel = (uint32_t *) (((uint8_t *) sdl_surface->pixels) + sdl_surface->pitch*sdl_surface->h);
-            stuffbaton.pitch = sdl_surface->pitch;
-            stuffbaton.rshift = sdl_surface->format->Rshift;
-            stuffbaton.gshift = sdl_surface->format->Gshift;
-            stuffbaton.bshift = sdl_surface->format->Bshift;
+			auto use_kerning = FT_HAS_KERNING(ft_face[i]);
+			auto previous = 0;
 
             /* render */
             for (unsigned j=0; j < glyph_count; ++j) {
-                if ((fterr = FT_Load_Glyph(ft_face[i], glyph_info[j].codepoint, 0))) {
-                    printf("load %08x failed fterr=%d.\n",  glyph_info[j].codepoint, fterr);
+				auto codepoint = glyph_info[j].codepoint;
+				/* convert character code to glyph index */
+				auto glyph_index = FT_Get_Char_Index(ft_face[i], codepoint);
+                if ((fterr = FT_Load_Glyph(ft_face[i], codepoint, FT_LOAD_DEFAULT))) {
+                    printf("load %08x failed fterr=%d.\n",  codepoint, fterr);
                 } else {
-                    if (ft_face[i]->glyph->format != FT_GLYPH_FORMAT_OUTLINE) {
-                        printf("glyph->format = %4s\n", (char *)&ft_face[i]->glyph->format);
+					auto glyph = ft_face[i]->glyph;
+                    if (glyph->format != FT_GLYPH_FORMAT_OUTLINE) {
+                        printf("glyph->format = %4s\n", (char *)&glyph->format);
                     } else {
-                        int gx = x + (glyph_pos[j].x_offset/64);
-                        int gy = y - (glyph_pos[j].y_offset/64);
+						/* retrieve kerning distance and move pen position */
+						if (use_kerning && previous && glyph_index)
+						{
+							FT_Vector  delta;
+							FT_Get_Kerning(ft_face[i], previous, glyph_index,
+								FT_KERNING_DEFAULT, &delta);
+							x += delta.x >> 6;
+						}
+                        float gx = x + (glyph_pos[j].x_offset/64.);
+						float gy = y - (glyph_pos[j].y_offset/64.);
 
-                        stuffbaton.pixels = (uint32_t *)(((uint8_t *) sdl_surface->pixels) + gy * sdl_surface->pitch) + gx;
-
-                        if ((fterr = FT_Outline_Render(ft_library, &ft_face[i]->glyph->outline, &ftr_params)))
-                            printf("FT_Outline_Render() failed err=%d\n", fterr);
+						FT_Render_Glyph(glyph, FT_RENDER_MODE_NORMAL);
+						FT_Bitmap bitmap = glyph->bitmap;
+						int bytes = bpp / 8;
+						auto pixels = &((uint32_t*)sdl_surface->pixels)[((int)gy - glyph->bitmap_top) * sdl_surface->w + (int)gx + glyph->bitmap_left];
+						for (int row = 0; row < bitmap.rows; ++row) {
+							for (int col = 0; col < bitmap.width; ++col) {
+								uint32_t* pixel = &pixels[row * sdl_surface->w + col];
+								uint8_t color = bitmap.buffer[row * bitmap.pitch + col];
+								if (color)
+									*pixel = color + (color << 8) + (color << 16);
+							}
+						}
                     }
                 }
 
-                x += glyph_pos[j].x_advance/64;
-                y -= glyph_pos[j].y_advance/64;
+                x += glyph_pos[j].x_advance/64.;
+                y -= glyph_pos[j].y_advance/64.;
+				previous = glyph_index;
             }
 
             /* clean up the buffer, but don't kill it just yet */
@@ -486,8 +421,13 @@ int main () {
 
         /* Blit our new image to our visible screen */
 
-        SDL_BlitSurface(sdl_surface, NULL, screen, NULL);
-        SDL_Flip(screen);
+		SDL_UpdateTexture(screen_tex, NULL, sdl_surface->pixels, sdl_surface->w * sizeof(Uint32));
+
+
+		SDL_RenderClear(renderer);
+		SDL_RenderCopy(renderer, screen_tex, NULL, NULL);
+		SDL_RenderPresent(renderer);
+
 
         /* Handle SDL events */
         SDL_Event event;
@@ -501,19 +441,6 @@ int main () {
                     break;
                 case SDL_QUIT:
                     done = 1;
-                    break;
-                case SDL_VIDEORESIZE:
-                    resized = 1;
-                    width = event.resize.w;
-                    height = event.resize.h;
-                    screen = SDL_SetVideoMode(event.resize.w, event.resize.h, bpp, videoFlags);
-                    if (!screen) {
-                        fprintf(stderr, "Could not get a surface after resize: %s\n", SDL_GetError( ));
-                        exit(-1);
-                    }
-                    /*  Recreate an SDL image surface we can draw to. */
-                    SDL_FreeSurface(sdl_surface);
-                    sdl_surface = SDL_CreateRGBSurface(0, width, height, 32, 0, 0 ,0, 0);
                     break;
             }
         }

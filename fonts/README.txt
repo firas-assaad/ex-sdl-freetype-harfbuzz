@@ -3,6 +3,7 @@ please check with the specific font vendors (they are all rather open and amiabl
 please review any licenses before you rip the font files from here and embed them in
 your application).
 
+Arial.ttf: https://github.com/JotJunior/PHP-Boleto-ZF2/blob/master/public/assets/fonts/arial.ttf
 DejaVuSerif.ttf: http://dejavu-fonts.org/
 lateef.ttf     : http://scripts.sil.org/cms/scripts/page.php?item_id=ArabicFonts_Download#ofl
 fireflysung.ttf: fonts/fireflysung-1.3.0/COPYRIGHT
